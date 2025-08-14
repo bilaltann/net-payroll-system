@@ -1,14 +1,15 @@
 ﻿using System.ComponentModel.DataAnnotations.Schema;
 using System.ComponentModel.DataAnnotations;
+using Shared.Abstractions;
 
 namespace Parameter.API.Models.Entities
 {
 
     // gelir vergisi dilimi 
-    public class IncomeTaxBracket
+    public class IncomeTaxBracket:IHasId<Guid>
     {
         [Key]
-        public int Id { get; set; }
+        public Guid Id { get; set; }
 
         [Column(TypeName = "decimal(18,2)")]
         public decimal LowerLimit { get; set; }

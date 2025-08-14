@@ -1,91 +1,108 @@
 ﻿using AutoMapper;
+using MassTransit;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Parameter.API.DTOs.TaxParameter;
 using Parameter.API.Models;
 using Parameter.API.Models.Entities;
+using Parameter.API.Services.Interfaces;
+using Shared.Abstractions;
+using Shared.Enums;
+using Shared.Events;
+using Shared.Infrastructure;
 
 namespace Parameter.API.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-
-    public class TaxParametersController(ParameterDbContext _context , IMapper _mapper) : ControllerBase
+    public class TaxParametersController(ICrudService<TaxParameter, Guid, GetTaxParameterDto, CreateTaxParameterDto, UpdateTaxParameterDto> _service,
+        ParameterDbContext _context, IPublishEndpoint _publishEndpoint, ITaxParameterKeyMapper _keyMapper) : ControllerBase
     {
-        // GET: api/TaxParameters
+
+        // GET : api/TaxParameters
         [HttpGet]
+        public async Task<ActionResult<IEnumerable<GetTaxParameterDto>>> GetAll(CancellationToken ct)
+        => Ok(await _service.GetAllAsync(ct));
 
-        public async Task<ActionResult<IEnumerable<GetTaxParameterDto>>> GetAllTaxParameters()
-        {
-            var taxParams = await _context.TaxParameters.ToListAsync();
 
-            return Ok(_mapper.Map<List<GetTaxParameterDto>>(taxParams));
-        }
+        // GET: api/TaxParameters/{id}
+        [HttpGet("{id:guid}")]
+        public async Task<ActionResult<GetTaxParameterDto>> GetById(Guid id, CancellationToken ct)
+            => (await _service.GetByIdAsync(id, ct)) is { } dto ? Ok(dto) : NotFound();
 
-        // GET: api/TaxParameters/5
-        [HttpGet("{id}")]
-        public async Task<ActionResult<GetTaxParameterDto>> GetByTaxParameterId(int id)
-        {
-           var taxParam = await _context.TaxParameters.FindAsync(id);
-           if (taxParam == null)
-            {
-                return NotFound();
-            }
 
-            return Ok(_mapper.Map<GetTaxParameterDto>(taxParam));
-        }
-
-        // POST : api/TaxParameters
         [HttpPost]
-
-        public async Task<ActionResult> CreateTaxParameter(CreateTaxParameterDto dto)
+        public async Task<ActionResult<GetTaxParameterDto>> Create([FromBody] CreateTaxParameterDto dto,
+            CancellationToken ct)
         {
-            var taxParam = _mapper.Map<TaxParameter>(dto);
-            _context.TaxParameters.Add(taxParam);
-            await _context.SaveChangesAsync();
+            var created = await _service.CreateAsync(dto, ct);
 
-            return CreatedAtAction(nameof(GetByTaxParameterId), new { id = taxParam.Id }, _mapper.Map<GetTaxParameterDto>(taxParam));
-            // bu return eklenen kayıdın ekranda görünmesini sağlar GetByTaxParameterId fonk sayesinde
+            // oluşan entity okuyup eventi güncel değerle yayınla
+
+            var entity = await _context.TaxParameters.AsNoTracking().
+                FirstAsync(x => x.Id == created.Id, ct);
+
+            await _publishEndpoint.Publish(new TaxParameterUpdatedEvent
+            {
+                Key = entity.Key,
+                Value = entity.Value,
+                Year = entity.StartDate.Year
+            }, ct);
+
+            return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
         }
 
-        // PUT : api/TaxParameters/5
-        [HttpPut("{id}")]
-
-        public async Task<ActionResult> UpdateTaxParameter(int id ,UpdateTaxParameterDto dto)
+        // PUT: api/TaxParameters/{id}
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update(Guid id, [FromBody] UpdateTaxParameterDto dto,
+            CancellationToken ct)
         {
             if (id != dto.Id)
-            {
-                return BadRequest();
-            }
-           var taxParam = await _context.TaxParameters.FindAsync(id);
+                return BadRequest("Route id ile body id aynı olmalı.");
 
-            if (taxParam == null)
-            {
+            var updated = await _service.UpdateAsync(id, dto, ct);
+            if (updated is null)
                 return NotFound();
-            }
 
-            _mapper.Map(dto, taxParam); //Bu işlem, DTO’daki verileri alır ve veritabanından gelen taxParam nesnesinin içine aktarır
-            await _context.SaveChangesAsync();
+            var entity = await _context.TaxParameters.AsNoTracking().FirstAsync(x => x.Id == id, ct);
+            await _publishEndpoint.Publish(new TaxParameterUpdatedEvent
+            {
+                Key = entity.Key,
+                Value = entity.Value,
+                Year = entity.StartDate.Year
+            }, ct);
 
             return NoContent();
         }
 
-        // DELETE : api/TaxParameters/5
-        [HttpDelete("{id}")]
-        public async Task<ActionResult> DeleteTaxParameter(int id)
+
+
+        // DELETE: api/TaxParameters/{id}
+        [HttpDelete("{id:guid}")]
+        public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+            => await _service.DeleteAsync(id, ct) ? NoContent() : NotFound();
+
+
+
+        // Özel: isme göre (opsiyonel year filtresiyle) güncel değer
+        // GET: api/TaxParameters/by-name/{name}?year=2025
+        [HttpGet("by-name/{name}")]
+        public async Task<IActionResult> GetByName(TaxParameterName name, [FromQuery] int? year,
+            CancellationToken ct)
         {
-            var taxParam = await _context.TaxParameters.FindAsync(id);
-            if (taxParam == null)
-            {
-                return NotFound();
-            }
+            var key = _keyMapper.GetKey(name);
 
-            _context.TaxParameters.Remove(taxParam);
-            await _context.SaveChangesAsync();
+            var q = _context.TaxParameters.AsNoTracking().Where(p => p.Key == key);
 
-            return NoContent();
+            if (year.HasValue)
+                q = q.Where(p => p.StartDate.Year <= year &&
+                                 (!p.EndDate.HasValue || p.EndDate.Value.Year >= year));
+
+            var parameter = await q.OrderByDescending(p => p.StartDate).FirstOrDefaultAsync(ct);
+            return parameter is null ? NotFound() : Ok(parameter.Value);
         }
+
 
     }
 }

@@ -2,7 +2,7 @@
 {
     public class GetIncomeTaxBracketDto
     {
-        public int Id { get; set; }
+        public Guid Id { get; set; }
 
         public decimal LowerLimit { get; set; }
 

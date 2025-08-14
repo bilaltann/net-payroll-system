@@ -1,88 +1,115 @@
-﻿using AutoMapper;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Mvc;
+using Shared.Abstractions;
 using Parameter.API.DTOs.IncomeTaxBracket;
-using Parameter.API.Models;
 using Parameter.API.Models.Entities;
+using Parameter.API.Models;
+using AutoMapper;
+using AutoMapper.QueryableExtensions;
+using Microsoft.EntityFrameworkCore;
 
 namespace Parameter.API.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    public class IncomeTaxBracketsController(ParameterDbContext _context , IMapper _mapper) : ControllerBase
+    public class IncomeTaxBracketsController : ControllerBase
     {
+        private readonly ParameterDbContext _context;
+        private readonly IMapper _mapper;
+        private readonly ICrudService<IncomeTaxBracket, Guid, GetIncomeTaxBracketDto, CreateIncomeTaxBracketDto, UpdateIncomeTaxBracketDto> _service;
+
+        public IncomeTaxBracketsController(
+            ParameterDbContext context,
+            IMapper mapper,
+            ICrudService<IncomeTaxBracket, Guid, GetIncomeTaxBracketDto, CreateIncomeTaxBracketDto, UpdateIncomeTaxBracketDto> service)
+        {
+            _context = context;
+            _mapper = mapper;
+            _service = service;
+        }
+
+        // --- CRUD ---
 
         // GET: api/IncomeTaxBrackets
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<GetIncomeTaxBracketDto>>> GetAllIncomeTaxBrackets()
-        {
-           var brackets = await  _context.IncomeTaxBrackets.ToListAsync();
-
-            return Ok(_mapper.Map<List<GetIncomeTaxBracketDto>>(brackets));
-        }
+        public async Task<ActionResult<IEnumerable<GetIncomeTaxBracketDto>>> GetAll(CancellationToken ct)
+            => Ok(await _service.GetAllAsync(ct));
 
 
-        // GET: api/IncomeTaxBrackets/5
-        [HttpGet("{id}")]  
+        // GET: api/IncomeTaxBrackets/{id}
+        [HttpGet("{id:guid}")]
+        public async Task<ActionResult<GetIncomeTaxBracketDto>> GetById(Guid id, CancellationToken ct)
+            => (await _service.GetByIdAsync(id, ct)) is { } dto ? Ok(dto) : NotFound();
 
-        public async Task<ActionResult<GetIncomeTaxBracketDto>> GetByIncomeTaxBracketId(int id)
-        {
-            var bracket = await _context.IncomeTaxBrackets.FindAsync(id);
 
-            if (bracket == null)
-            {
-                return NotFound();
-            }
-
-            return Ok(_mapper.Map<GetIncomeTaxBracketDto>(bracket));
-        }
-
-        // POST
+        // POST: api/IncomeTaxBrackets
         [HttpPost]
-
-        public async Task<IActionResult> CreateIncomeTaxBracket(CreateIncomeTaxBracketDto dto)
+        public async Task<ActionResult<GetIncomeTaxBracketDto>> Create([FromBody] CreateIncomeTaxBracketDto dto, CancellationToken ct)
         {
-            var bracket = _mapper.Map<IncomeTaxBracket>(dto);
-            _context.IncomeTaxBrackets.Add(bracket);
-            await _context.SaveChangesAsync();
-            return CreatedAtAction(nameof(GetByIncomeTaxBracketId), new { id = bracket.Id },
-                        _mapper.Map<GetIncomeTaxBracketDto>(bracket));
+            var created = await _service.CreateAsync(dto, ct);
+            return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
         }
 
 
-        // PUT 
-        [HttpPut("{id}")]
-        public async Task<ActionResult> UpdateIncomeTaxBracket(int id , UpdateIncomeTaxBracketDto dto)
+
+        // PUT: api/IncomeTaxBrackets/{id}
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update(Guid id, [FromBody] UpdateIncomeTaxBracketDto dto, CancellationToken ct)
         {
-            if (id !=dto.Id)
+            if (id != dto.Id) return BadRequest("Route id ile body id aynı olmalı.");
+            var updated = await _service.UpdateAsync(id, dto, ct);
+            return updated is null ? NotFound() : NoContent();
+        }
+
+        // DELETE: api/IncomeTaxBrackets/{id}
+        [HttpDelete("{id:guid}")]
+        public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+            => await _service.DeleteAsync(id, ct) ? NoContent() : NotFound();
+
+        // --- READ-ONLY EK UÇLAR ---
+
+        // GET: api/IncomeTaxBrackets/active?onDate=2025-01-01
+        [HttpGet("active")]
+        public async Task<ActionResult<List<GetIncomeTaxBracketDto>>> GetActive([FromQuery] DateTime? onDate, CancellationToken ct)
+        {
+            // 1) Tarihi al (yoksa bugünkü tarih)
+            var date = (onDate ?? DateTime.Today).Date;
+
+            // 2) Listeyi getir
+            var list = await _context.IncomeTaxBrackets
+                .Where(b => b.StartDate <= date && (b.EndDate == null || b.EndDate >= date))
+                .OrderBy(b => b.LowerLimit)
+                .ProjectTo<GetIncomeTaxBracketDto>(_mapper.ConfigurationProvider)
+                .ToListAsync(ct);
+
+            // 3) Eğer liste boşsa fallback (bugünkü tarihe bak)
+            if (list.Count == 0 && onDate.HasValue)
             {
-                return BadRequest();
+                var today = DateTime.Today.Date;
+                list = await _context.IncomeTaxBrackets
+                    .Where(b => b.StartDate <= today && (b.EndDate == null || b.EndDate >= today))
+                    .OrderBy(b => b.LowerLimit)
+                    .ProjectTo<GetIncomeTaxBracketDto>(_mapper.ConfigurationProvider)
+                    .ToListAsync(ct);
             }
 
-            var bracket = await _context.IncomeTaxBrackets.FindAsync(id);
-            if (bracket == null)
-            {
-                return NotFound();
-            }
-
-            _mapper.Map(dto, bracket);
-            await _context.SaveChangesAsync();
-            return NoContent();
-
+            return Ok(list);
         }
 
-        // DELETE
-        [HttpDelete("{id}")]
-        public async Task<ActionResult> DeleteIncomeTaxBracket(int id)
+
+        // GET: api/IncomeTaxBrackets/find?income=500000&onDate=2025-01-01
+        [HttpGet("find")]
+        public async Task<ActionResult<GetIncomeTaxBracketDto>> Find([FromQuery] decimal income, [FromQuery] DateTime? onDate, CancellationToken ct)
         {
-            var bracket = await _context.IncomeTaxBrackets.FindAsync(id);
-            if (bracket == null) return NotFound();
+            var date = (onDate ?? DateTime.Today).Date;
 
-            _context.IncomeTaxBrackets.Remove(bracket);
-            await _context.SaveChangesAsync();
+            var item = await _context.IncomeTaxBrackets
+                .Where(b => b.StartDate <= date && (b.EndDate == null || b.EndDate >= date)
+                            && income >= b.LowerLimit && (b.UpperLimit == null || income <= b.UpperLimit))
+                .OrderBy(b => b.LowerLimit)
+                .ProjectTo<GetIncomeTaxBracketDto>(_mapper.ConfigurationProvider)
+                .FirstOrDefaultAsync(ct);
 
-            return NoContent();
+            return item is null ? NotFound() : Ok(item);
         }
-
     }
 }

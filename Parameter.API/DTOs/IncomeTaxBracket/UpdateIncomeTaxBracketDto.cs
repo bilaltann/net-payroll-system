@@ -5,7 +5,7 @@ namespace Parameter.API.DTOs.IncomeTaxBracket
     public class UpdateIncomeTaxBracketDto
     {
         [Required]
-        public int Id { get; set; }
+        public Guid Id { get; set; }
 
         [Required(ErrorMessage = "Alt sınır boş olamaz.")]
         [Range(0, double.MaxValue, ErrorMessage = "Alt sınır negatif olamaz.")]
